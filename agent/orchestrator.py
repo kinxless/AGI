@@ -15,7 +15,7 @@ from typing import List
 
 from config import PLANNER
 from agent.llm import LLMClient, get_llm_client
-from agent.logger import RunLogger
+from agent.logger import NullLogger, RunLogger
 from agent.executor import StepExecutor, StepFailed
 from agent.planner import Planner, Step
 
@@ -28,15 +28,12 @@ class Orchestrator:
     def __init__(
         self,
         llm: LLMClient | None = None,
-        logger: RunLogger | None = None,
+        logger: RunLogger | NullLogger | None = None,
     ) -> None:
         self.llm = llm or get_llm_client()
-        self.log = logger or RunLogger()
+        self.log = logger or NullLogger()
         self.planner = Planner(llm=self.llm, logger=self.log)
         self.executor = StepExecutor(llm=self.llm, logger=self.log)
-
-    def _log(self, msg: str) -> None:
-        self.log.info(msg)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -68,7 +65,7 @@ class Orchestrator:
                 continue
 
             print(f"\n  Executing step {step.step_number}: {step.description}")
-            self._log(f"ORCHESTRATOR: executing step {step.step_number}")
+            self.log.info(f"ORCHESTRATOR: executing step {step.step_number}")
 
             try:
                 result = self.executor.execute_step(step, context)
@@ -78,7 +75,7 @@ class Orchestrator:
                 i += 1
 
             except StepFailed as exc:
-                self._log(f"ORCHESTRATOR: step {step.step_number} failed — {exc}")
+                self.log.info(f"ORCHESTRATOR: step {step.step_number} failed — {exc}")
 
                 if replan_count >= _MAX_REPLAN_ATTEMPTS:
                     print(
@@ -103,7 +100,7 @@ class Orchestrator:
                 print(self.planner.display_plan(new_steps))
 
                 answer = _prompt_user("Continue with revised plan? (yes/no): ")
-                self._log(f"ORCHESTRATOR: user replan response: {answer}")
+                self.log.info(f"ORCHESTRATOR: user replan response: {answer}")
                 if answer.strip().lower() not in ("yes", "y"):
                     print("\nAborted by user after replan.")
                     self._print_partial_report(task, all_steps)
@@ -126,24 +123,21 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _search_memory(self, task: str) -> str:
-        from agent.tools import _REGISTRY  # noqa: PLC2701
-        if "search_memory" not in _REGISTRY:
-            return ""
+        from agent.tools import get_tool, ToolNotFoundError
         try:
-            tool = _REGISTRY["search_memory"]
-            result = tool.call({"query": task, "max_results": 5})
+            result = get_tool("search_memory").call({"query": task, "max_results": 5})
             if result and "No relevant memories found" not in result:
-                self._log(f"ORCHESTRATOR: memory context retrieved:\n{result}")
+                self.log.info(f"ORCHESTRATOR: memory context retrieved:\n{result}")
                 print(f"\n[Memory] Found relevant context:\n{result}\n")
                 return result
+        except ToolNotFoundError:
+            pass
         except Exception as e:
-            self._log(f"ORCHESTRATOR: memory search error: {e}")
+            self.log.info(f"ORCHESTRATOR: memory search error: {e}")
         return ""
 
     def _save_memory(self, task: str, steps: List[Step], partial: bool) -> None:
-        from agent.tools import _REGISTRY  # noqa: PLC2701
-        if "save_to_memory" not in _REGISTRY:
-            return
+        from agent.tools import get_tool, ToolNotFoundError
         done = [s for s in steps if s.status == "done"]
         failed = [s for s in steps if s.status == "failed"]
         summary_lines = [
@@ -154,17 +148,17 @@ class Orchestrator:
         for s in done:
             snippet = textwrap.shorten(s.result or "", width=100, placeholder="...")
             summary_lines.append(f"  Step {s.step_number}: {s.description} → {snippet}")
-        if failed:
-            for s in failed:
-                summary_lines.append(f"  FAILED step {s.step_number}: {s.description}")
+        for s in failed:
+            summary_lines.append(f"  FAILED step {s.step_number}: {s.description}")
         summary = "\n".join(summary_lines)
         try:
-            tool = _REGISTRY["save_to_memory"]
-            tool.call({"text": summary, "source": "orchestrator"})
-            self._log(f"ORCHESTRATOR: saved to memory:\n{summary}")
+            get_tool("save_to_memory").call({"text": summary, "source": "orchestrator"})
+            self.log.info(f"ORCHESTRATOR: saved to memory:\n{summary}")
             print("\n[Memory] Task summary saved to memory.")
+        except ToolNotFoundError:
+            pass
         except Exception as e:
-            self._log(f"ORCHESTRATOR: save_to_memory error: {e}")
+            self.log.info(f"ORCHESTRATOR: save_to_memory error: {e}")
 
     # ------------------------------------------------------------------
     # Plan approval loop
@@ -177,27 +171,19 @@ class Orchestrator:
         for cycle in range(1, _MAX_APPROVAL_CYCLES + 1):
             print(self.planner.display_plan(steps))
             answer = _prompt_user("Approve this plan? (yes / no / edit): ")
-            self._log(f"ORCHESTRATOR: plan approval cycle {cycle}, answer: {answer}")
+            self.log.info(f"ORCHESTRATOR: plan approval cycle {cycle}, answer: {answer}")
             answer_l = answer.strip().lower()
 
             if answer_l in ("yes", "y"):
                 return steps
 
-            if answer_l in ("no", "n"):
+            elif answer_l in ("no", "n", "edit"):
                 if cycle == _MAX_APPROVAL_CYCLES:
                     print(f"\nMax revision cycles ({_MAX_APPROVAL_CYCLES}) reached. Aborting.")
                     return None
                 feedback = _prompt_user("What should change? ")
-                self._log(f"ORCHESTRATOR: user plan feedback: {feedback}")
-                steps = self.planner.plan(f"{task}\n\nUser feedback on plan: {feedback}", memory_context)
-
-            elif answer_l == "edit":
-                if cycle == _MAX_APPROVAL_CYCLES:
-                    print(f"\nMax revision cycles ({_MAX_APPROVAL_CYCLES}) reached. Aborting.")
-                    return None
-                change = _prompt_user("Describe the change: ")
-                self._log(f"ORCHESTRATOR: user edit request: {change}")
-                steps = self.planner.plan(f"{task}\n\nEdit the plan: {change}", memory_context)
+                self.log.info(f"ORCHESTRATOR: user plan revision: {feedback}")
+                steps = self.planner.plan(f"{task}\n\nRevise the plan: {feedback}", memory_context)
 
             else:
                 print("  Please answer yes, no, or edit.")

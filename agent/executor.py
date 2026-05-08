@@ -9,7 +9,7 @@ import textwrap
 
 from config import PLANNER
 from agent.llm import LLMClient
-from agent.logger import RunLogger
+from agent.logger import NullLogger, RunLogger
 from agent.loop import AgentLoop
 from agent.planner import Step
 
@@ -20,14 +20,10 @@ class StepExecutor:
     def __init__(
         self,
         llm: LLMClient | None = None,
-        logger: RunLogger | None = None,
+        logger: RunLogger | NullLogger | None = None,
     ) -> None:
         self.llm = llm
-        self.log = logger
-
-    def _log_info(self, msg: str) -> None:
-        if self.log:
-            self.log.info(msg)
+        self.log = logger or NullLogger()
 
     def execute_step(self, step: Step, context: str) -> str:
         """Run step up to _MAX_ATTEMPTS times. Returns the result string.
@@ -40,7 +36,7 @@ class StepExecutor:
             step.status = "running"
 
             task_prompt = _build_step_prompt(step, context, attempt, last_error)
-            self._log_info(
+            self.log.info(
                 f"EXECUTOR: step {step.step_number} attempt {attempt}/{_MAX_ATTEMPTS}"
             )
 
@@ -50,10 +46,9 @@ class StepExecutor:
             except Exception as e:
                 result = f"AgentLoop raised {type(e).__name__}: {e}"
 
-            failed_keywords = ("failed", "error", "could not", "unable", "exception")
-            if _looks_like_failure(result, failed_keywords):
+            if _looks_like_failure(result):
                 last_error = result
-                self._log_info(
+                self.log.info(
                     f"EXECUTOR: step {step.step_number} attempt {attempt} looks failed: "
                     f"{result[:200]}"
                 )
@@ -68,7 +63,7 @@ class StepExecutor:
 
             step.status = "done"
             step.result = result
-            self._log_info(
+            self.log.info(
                 f"EXECUTOR: step {step.step_number} done on attempt {attempt}"
             )
             return result
@@ -97,6 +92,15 @@ def _build_step_prompt(
     return "\n".join(parts)
 
 
-def _looks_like_failure(result: str, keywords: tuple[str, ...]) -> bool:
-    lower = result.lower()
-    return any(kw in lower for kw in keywords) and len(result) < 300
+# Exact prefixes the agent loop emits on genuine failures.
+# Keyword matching caused false positives on results like "ran without errors".
+_FAILURE_PREFIXES = (
+    "Model failed to produce valid JSON",
+    "Max iterations",
+    "AgentLoop raised",
+    "ERROR:",
+)
+
+
+def _looks_like_failure(result: str) -> bool:
+    return any(result.startswith(p) for p in _FAILURE_PREFIXES)

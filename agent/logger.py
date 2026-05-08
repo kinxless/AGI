@@ -102,3 +102,24 @@ class RunLogger:
     def info(self, msg: str) -> None:
         self._console("INFO", msg)
         self._write_jsonl("info", {"msg": msg})
+
+
+class NullLogger:
+    """No-op logger used as the default in internal classes.
+
+    Lets Planner, StepExecutor, and Orchestrator call self.log.info()
+    unconditionally without None guards — output is silently discarded
+    unless a real RunLogger is injected.
+    """
+    path: Path | None = None
+
+    def close(self) -> None: pass
+    def system(self, prompt: str) -> None: pass
+    def user_task(self, task: str) -> None: pass
+    def model_input(self, iteration: int, messages: list) -> None: pass
+    def model_output(self, iteration: int, raw: str) -> None: pass
+    def parse_error(self, iteration: int, attempt: int, error: str, raw: str) -> None: pass
+    def tool_call(self, iteration: int, name: str, args: dict) -> None: pass
+    def tool_result(self, iteration: int, name: str, ok: bool, result: object) -> None: pass
+    def done(self, iteration: int, final: str) -> None: pass
+    def info(self, msg: str) -> None: pass

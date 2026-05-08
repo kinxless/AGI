@@ -12,7 +12,7 @@ from typing import Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from agent.llm import LLMClient, get_llm_client
-from agent.logger import RunLogger
+from agent.logger import NullLogger, RunLogger
 
 
 # ---------------------------------------------------------------------------
@@ -68,14 +68,10 @@ class Planner:
     def __init__(
         self,
         llm: LLMClient | None = None,
-        logger: RunLogger | None = None,
+        logger: RunLogger | NullLogger | None = None,
     ) -> None:
         self.llm = llm or get_llm_client()
-        self.log = logger
-
-    def _log_info(self, msg: str) -> None:
-        if self.log:
-            self.log.info(msg)
+        self.log = logger or NullLogger()
 
     def _tool_list(self) -> str:
         from agent.tools import all_tools
@@ -110,11 +106,11 @@ class Planner:
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ]
-        self._log_info(f"PLANNER: generating plan for task: {task}")
+        self.log.info(f"PLANNER: generating plan for task: {task}")
         raw = self.llm.chat(messages)
-        self._log_info(f"PLANNER raw output:\n{raw}")
+        self.log.info(f"PLANNER raw output:\n{raw}")
         steps = self._parse_steps(raw)
-        self._log_info(f"PLANNER: produced {len(steps)} steps")
+        self.log.info(f"PLANNER: produced {len(steps)} steps")
         return steps
 
     def replan(
@@ -146,11 +142,11 @@ class Planner:
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ]
-        self._log_info(f"PLANNER: replanning after failure of step {failed_step.step_number}")
+        self.log.info(f"PLANNER: replanning after failure of step {failed_step.step_number}")
         raw = self.llm.chat(messages)
-        self._log_info(f"PLANNER replan raw output:\n{raw}")
+        self.log.info(f"PLANNER replan raw output:\n{raw}")
         new_steps = self._parse_steps(raw, number_offset=number_offset)
-        self._log_info(f"PLANNER: replan produced {len(new_steps)} new steps")
+        self.log.info(f"PLANNER: replan produced {len(new_steps)} new steps")
         return new_steps
 
     def display_plan(self, steps: List[Step]) -> str:

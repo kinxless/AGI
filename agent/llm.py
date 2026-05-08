@@ -11,6 +11,9 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any
 
+# Exported so callers can reference it without importing json directly
+compact_json = json.dumps
+
 import requests
 
 from config import KIMI, LLM_BACKEND, OLLAMA
@@ -35,6 +38,7 @@ class OllamaClient(LLMClient):
             "model": self.model,
             "messages": messages,
             "stream": False,
+            "format": "json",
             "options": {"temperature": self.temperature},
         }
         resp = requests.post(url, json=payload, timeout=self.timeout)

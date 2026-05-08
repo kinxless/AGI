@@ -11,6 +11,7 @@ before the iteration counts against the budget.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from config import AGENT
@@ -186,6 +187,4 @@ def _has_valid_shape(parsed: dict[str, Any]) -> bool:
 
 
 def _compact_json(obj: dict[str, Any]) -> str:
-    import json as _json
-
-    return _json.dumps(obj, ensure_ascii=False)
+    return json.dumps(obj, ensure_ascii=False)
