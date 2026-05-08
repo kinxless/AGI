@@ -26,9 +26,19 @@ for i in $(seq 1 30); do
     fi
 done
 
-echo "[2/2] Loading model into VRAM..."
+echo "[2/3] Loading model into VRAM..."
 ollama run "$OLLAMA_MODEL" "reply with the single word: ready" --nowordwrap 2>/dev/null || true
 echo "  Done."
+
+echo "[3/3] Starting voice server..."
+pkill -f 'uvicorn voice.voice_server' 2>/dev/null || true
+sleep 1
+cd "$AGENT_DIR"
+# shellcheck disable=SC1091
+source .venv/bin/activate
+nohup uvicorn voice.voice_server:app --host 0.0.0.0 --port 8765 \
+    > /tmp/voice.log 2>&1 &
+echo "  Voice server running on port 8765 (logs: /tmp/voice.log)"
 
 echo ""
 echo "Run the agent:"

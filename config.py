@@ -69,3 +69,11 @@ PLANNER = {
 VISION_MODEL    = os.environ.get("VISION_MODEL",    "qwen2.5vl:7b")
 SCREENSHOT_DIR  = os.environ.get("SCREENSHOT_DIR",  "/workspace/AGI/logs/screenshots")
 BROWSER_HEADLESS = os.environ.get("BROWSER_HEADLESS", "false").lower() == "true"
+
+# --- Phase 5A: voice server ---
+VOICE_SERVER_PORT = int(os.environ.get("VOICE_SERVER_PORT", "8765"))
+WHISPER_MODEL     = os.environ.get("WHISPER_MODEL",  "base")
+WHISPER_DEVICE    = os.environ.get("WHISPER_DEVICE", "cuda")
+TTS_VOICE         = os.environ.get("TTS_VOICE",      "am_adam")
+KOKORO_MODEL_PATH  = os.environ.get("KOKORO_MODEL_PATH",  "kokoro-v1.0.onnx")
+KOKORO_VOICES_PATH = os.environ.get("KOKORO_VOICES_PATH", "voices-v1.0.bin")

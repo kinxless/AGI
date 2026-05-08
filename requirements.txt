@@ -8,3 +8,12 @@ sentence-transformers>=3.0
 
 # Phase 4: browser computer use
 playwright>=1.59.0
+
+# Phase 5A: voice server
+faster-whisper
+kokoro-onnx
+soundfile
+websockets
+uvicorn
+fastapi
+python-multipart
