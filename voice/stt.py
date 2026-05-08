@@ -44,8 +44,18 @@ class SpeechToText:
                     language="en",
                     condition_on_previous_text=False,
                     temperature=0.0,
+                    vad_filter=True,
+                    vad_parameters={"min_silence_duration_ms": 500},
+                    no_speech_threshold=0.6,
                 )
-                return "".join(s.text for s in segments).strip()
+                text = "".join(s.text for s in segments).strip()
+                # Whisper's signature hallucination on silence is the single
+                # word "You". If VAD let something slip through and that's
+                # all we got, treat it as no speech.
+                if text.lower().strip(".! ") in {"you", "thank you", "thanks"}:
+                    print(f"[STT] discarding hallucination: {text!r}")
+                    return ""
+                return text
             finally:
                 try:
                     os.unlink(path)
