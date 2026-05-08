@@ -30,16 +30,24 @@ class SpeechToText:
     def transcribe(self, audio_bytes: bytes) -> str:
         try:
             self._ensure_loaded()
-            # Use the correct extension so ffmpeg picks the right decoder.
-            # WAV starts with "RIFF"; everything else (webm, ogg, mp4) goes
-            # to ffmpeg as-is via the .webm extension — faster-whisper/pyav
-            # handles any format ffmpeg can decode.
             ext = ".wav" if len(audio_bytes) >= 4 and audio_bytes[:4] == b"RIFF" else ".webm"
+
+            # Save a copy for inspection — `scp` it back to listen yourself.
+            try:
+                import time as _time
+                os.makedirs("/tmp/voice_debug", exist_ok=True)
+                debug_path = f"/tmp/voice_debug/audio_{int(_time.time()*1000)}{ext}"
+                with open(debug_path, "wb") as df:
+                    df.write(audio_bytes)
+                print(f"[STT] saved debug audio: {debug_path} ({len(audio_bytes):,} bytes)")
+            except Exception as _e:
+                print(f"[STT] debug save failed: {_e}")
+
             with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
                 f.write(audio_bytes)
                 path = f.name
             try:
-                segments, _info = self._model.transcribe(
+                segments, info = self._model.transcribe(
                     path,
                     language="en",
                     condition_on_previous_text=False,
@@ -48,10 +56,18 @@ class SpeechToText:
                     vad_parameters={"min_silence_duration_ms": 500},
                     no_speech_threshold=0.6,
                 )
-                text = "".join(s.text for s in segments).strip()
-                # Whisper's signature hallucination on silence is the single
-                # word "You". If VAD let something slip through and that's
-                # all we got, treat it as no speech.
+                print(
+                    f"[STT] decoded: duration={info.duration:.2f}s "
+                    f"lang={info.language} prob={info.language_probability:.2f}"
+                )
+                segs = list(segments)
+                for s in segs:
+                    print(
+                        f"[STT] seg [{s.start:.2f}-{s.end:.2f}] "
+                        f"no_speech={s.no_speech_prob:.2f} text={s.text!r}"
+                    )
+                text = "".join(s.text for s in segs).strip()
+                print(f"[STT] raw text: {text!r}")
                 if text.lower().strip(".! ") in {"you", "thank you", "thanks"}:
                     print(f"[STT] discarding hallucination: {text!r}")
                     return ""
