@@ -5,3 +5,6 @@ python-dotenv>=1.0
 # RAG / memory (not in the RAG repo's own requirements.txt)
 chromadb>=0.5
 sentence-transformers>=3.0
+
+# Phase 4: browser computer use
+playwright>=1.59.0

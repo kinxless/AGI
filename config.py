@@ -64,3 +64,8 @@ PLANNER = {
     "context_word_limit":  500,
     "max_approval_cycles": 3,
 }
+
+# --- Phase 4: browser + vision ---
+VISION_MODEL    = os.environ.get("VISION_MODEL",    "qwen2.5vl:7b")
+SCREENSHOT_DIR  = os.environ.get("SCREENSHOT_DIR",  "/workspace/AGI/logs/screenshots")
+BROWSER_HEADLESS = os.environ.get("BROWSER_HEADLESS", "false").lower() == "true"

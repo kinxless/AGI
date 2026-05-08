@@ -2,3 +2,4 @@
 from . import file_tools  # noqa: F401
 from . import python_tool  # noqa: F401
 from . import memory_tools  # noqa: F401
+from . import browser_tools  # noqa: F401
