@@ -1,3 +1,7 @@
 pydantic>=2.6
 requests>=2.31
 python-dotenv>=1.0
+
+# RAG / memory (not in the RAG repo's own requirements.txt)
+chromadb>=0.5
+sentence-transformers>=3.0

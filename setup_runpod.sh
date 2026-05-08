@@ -1,56 +1,128 @@
 #!/usr/bin/env bash
-# Setup script for a RunPod GPU pod (Ubuntu).
-# Run once after the pod starts:  bash setup_runpod.sh
+# First-time setup for a RunPod GPU pod (Ubuntu + CUDA).
+# Run ONCE after the pod starts:  bash setup_runpod.sh
+#
+# On every subsequent pod RESTART, run instead:  bash start_runpod.sh
 set -euo pipefail
 
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b-instruct}"
-RAG_REPO_URL="${RAG_REPO_URL:-}"          # set to your RAG repo git URL if needed
-RAG_REPO_DIR="${RAG_REPO_PATH:-/workspace/rag_system}"
-
-echo "=== [1/5] Installing system deps ==="
-apt-get update -qq && apt-get install -y -qq curl git python3-venv python3-pip
-
-echo "=== [2/5] Installing Ollama ==="
-if ! command -v ollama &>/dev/null; then
-    curl -fsSL https://ollama.ai/install.sh | sh
-fi
-
-echo "=== [3/5] Starting Ollama and pulling model: $OLLAMA_MODEL ==="
-ollama serve &>/tmp/ollama.log &
-sleep 5
-ollama pull "$OLLAMA_MODEL"
-echo "Ollama ready."
-
-echo "=== [4/5] Python virtual environment ==="
-python3 -m venv .venv
-# shellcheck disable=SC1091
-source .venv/bin/activate
-pip install --quiet --upgrade pip
-pip install --quiet -r requirements.txt
-
-# Install RAG repo dependencies if the repo exists or a URL was provided
-if [ -n "$RAG_REPO_URL" ] && [ ! -d "$RAG_REPO_DIR" ]; then
-    echo "Cloning RAG repo from $RAG_REPO_URL..."
-    git clone "$RAG_REPO_URL" "$RAG_REPO_DIR"
-fi
-if [ -f "$RAG_REPO_DIR/requirements.txt" ]; then
-    echo "Installing RAG repo dependencies..."
-    pip install --quiet -r "$RAG_REPO_DIR/requirements.txt"
-fi
-
-echo "=== [5/5] Writing .env ==="
-if [ ! -f .env ]; then
-    cp .env.example .env
-    # Patch RAG path to Linux location
-    sed -i "s|^# RAG_REPO_PATH=.*|RAG_REPO_PATH=$RAG_REPO_DIR|" .env
-    sed -i "s|^# RAG_REPO_PATH=/workspace.*|RAG_REPO_PATH=$RAG_REPO_DIR|" .env
-    echo "RAG_REPO_PATH=$RAG_REPO_DIR" >> .env
-    echo ".env created. Edit it if needed before running the agent."
-else
-    echo ".env already exists, skipping."
-fi
+RAG_REPO_URL="${RAG_REPO_URL:-https://github.com/kinxless/RAG_system.git}"
+RAG_REPO_DIR="/workspace/rag_system"
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo ""
-echo "=== Setup complete ==="
-echo "Activate venv : source .venv/bin/activate"
-echo "Run agent     : python main.py \"your task here\""
+echo "======================================================"
+echo "  AGI Project — RunPod First-Time Setup"
+echo "  Agent dir : $AGENT_DIR"
+echo "  RAG dir   : $RAG_REPO_DIR"
+echo "  Model     : $OLLAMA_MODEL"
+echo "======================================================"
+echo ""
+
+# ------------------------------------------------------------------
+# 1. System deps
+# ------------------------------------------------------------------
+echo "[1/6] Installing system packages..."
+apt-get update -qq
+apt-get install -y -qq curl git python3-venv python3-pip
+
+# ------------------------------------------------------------------
+# 2. Ollama (GPU-aware install)
+# ------------------------------------------------------------------
+echo "[2/6] Installing Ollama..."
+if ! command -v ollama &>/dev/null; then
+    curl -fsSL https://ollama.ai/install.sh | sh
+else
+    echo "  Ollama already installed, skipping."
+fi
+
+# ------------------------------------------------------------------
+# 3. Start Ollama and wait until it responds
+# ------------------------------------------------------------------
+echo "[3/6] Starting Ollama..."
+pkill ollama 2>/dev/null || true
+sleep 2
+nohup ollama serve > /tmp/ollama.log 2>&1 &
+
+echo -n "  Waiting for Ollama to be ready"
+for i in $(seq 1 30); do
+    if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+        echo " ready."
+        break
+    fi
+    echo -n "."
+    sleep 2
+    if [ "$i" -eq 30 ]; then
+        echo ""
+        echo "ERROR: Ollama did not start after 60 seconds. Check /tmp/ollama.log"
+        exit 1
+    fi
+done
+
+# Pull model
+echo "  Pulling $OLLAMA_MODEL..."
+ollama pull "$OLLAMA_MODEL"
+
+# Pre-warm: load model into VRAM so first agent call is fast
+echo "  Pre-warming model..."
+ollama run "$OLLAMA_MODEL" "reply with the single word: ready" --nowordwrap 2>/dev/null || true
+echo "  Model loaded into VRAM."
+
+# ------------------------------------------------------------------
+# 4. Clone RAG repo into persistent /workspace
+# ------------------------------------------------------------------
+echo "[4/6] Setting up RAG repo at $RAG_REPO_DIR..."
+if [ ! -d "$RAG_REPO_DIR" ]; then
+    git clone "$RAG_REPO_URL" "$RAG_REPO_DIR"
+    echo "  Cloned."
+else
+    echo "  Already exists, pulling latest..."
+    git -C "$RAG_REPO_DIR" pull --ff-only || echo "  (pull skipped — local changes present)"
+fi
+
+# ------------------------------------------------------------------
+# 5. Python venv + dependencies
+# ------------------------------------------------------------------
+echo "[5/6] Creating Python venv and installing dependencies..."
+cd "$AGENT_DIR"
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --quiet --upgrade pip
+
+# Agent dependencies (includes chromadb + sentence-transformers)
+pip install -r requirements.txt
+
+# RAG repo web dependencies (fastapi etc) — install only if present
+if [ -f "$RAG_REPO_DIR/requirements.txt" ]; then
+    pip install --quiet -r "$RAG_REPO_DIR/requirements.txt" || true
+fi
+
+# ------------------------------------------------------------------
+# 6. Write .env
+# ------------------------------------------------------------------
+echo "[6/6] Writing .env..."
+cat > "$AGENT_DIR/.env" <<EOF
+# Auto-generated by setup_runpod.sh
+LLM_BACKEND=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=$OLLAMA_MODEL
+OLLAMA_TIMEOUT_S=300
+RAG_REPO_PATH=$RAG_REPO_DIR
+EOF
+echo "  .env written."
+
+# ------------------------------------------------------------------
+# Done
+# ------------------------------------------------------------------
+echo ""
+echo "======================================================"
+echo "  Setup complete."
+echo ""
+echo "  To run the agent:"
+echo "    cd $AGENT_DIR"
+echo "    source .venv/bin/activate"
+echo "    python main.py \"your task here\""
+echo ""
+echo "  On next pod RESTART (Ollama won't be running):"
+echo "    bash start_runpod.sh"
+echo "======================================================"
