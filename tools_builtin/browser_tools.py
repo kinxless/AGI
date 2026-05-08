@@ -240,28 +240,18 @@ class SearchWebArgs(BaseModel):
 
 @register_tool(
     "search_web",
-    "Open Google, search for a query, and return a vision-model summary of the results.",
+    "Search the web for a query and return a vision-model summary of the results.",
     SearchWebArgs,
 )
 def search_web(query: str) -> str:
     try:
+        from urllib.parse import quote_plus
         _ensure_display()
         bm = get_browser_manager()
         bm.start()
-        bm.navigate("https://www.google.com")
-        time.sleep(1)
-
-        png = bm.screenshot()
-        _save_screenshot(png)
-        coord_resp = get_vision_analyzer().analyze(
-            png,
-            'Where is the search input box? Give x,y coordinates as JSON {"x": int, "y": int}',
-        )
-        x, y = _parse_coords(coord_resp)
-        bm.click_at(x, y)
-        time.sleep(0.3)
-        bm.type_text(query)
-        bm.press_key("Enter")
+        # Navigate directly to results — bypasses GDPR/cookie consent dialogs
+        url = f"https://duckduckgo.com/?q={quote_plus(query)}&kl=us-en"
+        bm.navigate(url)
         time.sleep(2)
 
         _, path, summary = _screenshot_and_ask(
