@@ -17,3 +17,8 @@ websockets
 uvicorn
 fastapi
 python-multipart
+
+# Phase 5B: web UI
+jinja2
+aiofiles
+pydub

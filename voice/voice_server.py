@@ -1,20 +1,35 @@
-"""FastAPI WebSocket voice server.
+"""FastAPI voice server: Jarvis web UI + STT/agent/TTS pipeline.
 
-Pipeline per audio message:
-    audio bytes (base64)
-        -> STT (faster-whisper)
-        -> Orchestrator.run(text)         (Phase 3 stack, full plan/execute)
-        -> TTS (kokoro-onnx)
-        -> {text, audio (base64)}
+Endpoints
+---------
+GET  /          -> templates/index.html (the Jarvis UI)
+GET  /health    -> {"status": "ok"}
+GET  /static/*  -> static assets (currently empty placeholder dir)
+WS   /ws        -> audio in / agent run / audio out
 
-The Orchestrator is interactive (it asks the user to approve plans on
-stdin and prints to stdout). For voice we redirect stdin to feed "yes"
-automatically, and tee stdout so we can capture the agent's final answer
-while still showing it on the server console.
+WebSocket protocol
+------------------
+Client -> server:
+    {"type": "ping"}
+    {"type": "audio", "data": "<base64-encoded WAV bytes>"}
 
-Single-client only. Each step is sent as its own WebSocket message so
-the laptop client can show real-time status. All exceptions are sent
-back as {"type": "error", "message": "..."} — the server never crashes.
+Server -> client:
+    {"type": "pong"}
+    {"type": "transcribed", "text": "..."}
+    {"type": "thinking"}
+    {"type": "response",   "text": "...", "audio": "<base64 WAV>"}
+    {"type": "error",      "message": "..."}
+
+Design notes
+------------
+* The Orchestrator is interactive (input() for plan approval, prints to
+  stdout). For voice we redirect stdin to feed "yes" automatically and
+  tee stdout so we can extract the agent loop's DONE block as the final
+  spoken answer. Phase 1-4 code is not modified.
+* All blocking work (STT, agent, TTS) runs in a thread executor so the
+  WebSocket event loop never blocks.
+* If the browser sends webm/opus instead of WAV, _ensure_wav() runs it
+  through pydub (ffmpeg) as a fallback before STT.
 """
 from __future__ import annotations
 
@@ -23,36 +38,51 @@ import base64
 import io
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import tools_builtin  # noqa: F401  (registers built-in tools at import time)
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from voice.stt import get_stt
 from voice.tts import get_tts
 
 
-app = FastAPI()
+_VOICE_DIR = Path(__file__).resolve().parent
+_TEMPLATES_DIR = _VOICE_DIR / "templates"
+_STATIC_DIR = _VOICE_DIR / "static"
+_STATIC_DIR.mkdir(exist_ok=True)
 
-# A single lock around the agent run so concurrent /voice connections
-# can't trample each other's stdin/stdout redirection.
+app = FastAPI()
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+# Single agent run at a time — protects stdin/stdout redirection.
 _agent_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Health
+# HTTP
 # ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"status": "ok", "stt": True, "tts": True}
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
 # WebSocket
 # ---------------------------------------------------------------------------
 
-@app.websocket("/voice")
+@app.websocket("/ws")
 async def voice_ws(ws: WebSocket) -> None:
     await ws.accept()
     print("[voice] client connected")
@@ -64,7 +94,6 @@ async def voice_ws(ws: WebSocket) -> None:
             except json.JSONDecodeError as e:
                 await _send_error(ws, f"Invalid JSON: {e}")
                 continue
-
             await _handle_message(ws, msg)
     except WebSocketDisconnect:
         print("[voice] client disconnected")
@@ -75,15 +104,12 @@ async def voice_ws(ws: WebSocket) -> None:
 
 async def _handle_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     msg_type = msg.get("type")
-
     if msg_type == "ping":
         await ws.send_json({"type": "pong"})
         return
-
     if msg_type == "audio":
         await _handle_audio(ws, msg)
         return
-
     await _send_error(ws, f"Unknown message type: {msg_type}")
 
 
@@ -91,15 +117,16 @@ async def _handle_audio(ws: WebSocket, msg: dict[str, Any]) -> None:
     # 1. Decode
     try:
         audio_b64 = msg.get("data") or ""
-        audio_bytes = base64.b64decode(audio_b64)
+        raw = base64.b64decode(audio_b64)
     except Exception as e:
         await _send_error(ws, f"Bad audio payload: {e}")
         return
 
+    audio_bytes = _ensure_wav(raw)
     loop = asyncio.get_running_loop()
 
     # 2. Transcribe
-    print("[voice] transcribing audio...")
+    print(f"[voice] transcribing {len(audio_bytes):,} bytes...")
     try:
         text = await loop.run_in_executor(None, get_stt().transcribe, audio_bytes)
     except Exception as e:
@@ -114,7 +141,7 @@ async def _handle_audio(ws: WebSocket, msg: dict[str, Any]) -> None:
     print(f"[voice] transcribed: {text!r}")
     await ws.send_json({"type": "transcribed", "text": text})
 
-    # 3. Run agent
+    # 3. Run agent (synchronous — runs in executor)
     await ws.send_json({"type": "thinking"})
     print(f"[voice] running agent on: {text!r}")
     try:
@@ -124,9 +151,7 @@ async def _handle_audio(ws: WebSocket, msg: dict[str, Any]) -> None:
         await _send_error(ws, f"Agent error: {e}")
         return
 
-    answer = (answer or "").strip()
-    if not answer:
-        answer = "The agent finished but produced no spoken output."
+    answer = (answer or "").strip() or "The agent finished but produced no spoken output."
     print(f"[voice] agent answer ({len(answer)} chars)")
 
     # 4. Synthesize
@@ -155,17 +180,34 @@ async def _send_error(ws: WebSocket, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator wrapper (sync — runs in a thread pool from the WS handler)
+# Helpers
 # ---------------------------------------------------------------------------
+
+def _ensure_wav(audio_bytes: bytes) -> bytes:
+    """Return WAV bytes. Convert webm/opus/etc. via pydub if needed.
+
+    Falls back to passing the raw bytes through if pydub/ffmpeg aren't
+    available — faster-whisper can decode many formats via pyav anyway.
+    """
+    if len(audio_bytes) >= 4 and audio_bytes[:4] == b"RIFF":
+        return audio_bytes
+    try:
+        from pydub import AudioSegment
+        seg = AudioSegment.from_file(io.BytesIO(audio_bytes))
+        out = io.BytesIO()
+        seg.export(out, format="wav")
+        return out.getvalue()
+    except Exception as e:
+        print(f"[voice] _ensure_wav passthrough: {e}")
+        return audio_bytes
+
 
 def _run_orchestrator(task: str) -> str:
     """Run the full Orchestrator and capture its final answer.
 
-    The Orchestrator is interactive (input() for plan approval) and prints
-    everything to stdout. We:
-      * feed 'yes' to stdin so plans are auto-approved
-      * tee stdout so the captured text contains the agent loop's DONE
-        block (the actual final answer) while still letting us see logs
+    The Orchestrator prints to stdout and reads input() for plan
+    approval. We redirect stdin to feed "yes" automatically, and tee
+    stdout so the captured text contains the agent loop's DONE block.
     """
     from agent.orchestrator import Orchestrator
     from agent.logger import RunLogger
@@ -189,7 +231,7 @@ def _run_orchestrator(task: str) -> str:
 
 
 class _Tee:
-    """Write to multiple streams; tolerate per-stream errors."""
+    """Writeable that forwards to multiple streams; tolerates per-stream errors."""
 
     def __init__(self, *streams) -> None:
         self.streams = streams
@@ -213,9 +255,9 @@ class _Tee:
 def _extract_answer(captured: str) -> str:
     """Pull a TTS-friendly answer from captured orchestrator output.
 
-    The agent loop prints a "DONE" block containing the step's full
-    final answer; the *last* DONE block belongs to the final step.
-    Falls back to the TASK COMPLETE summary, then to raw tail text.
+    Strategy: the agent loop prints a "DONE" block containing each step's
+    full final answer. The *last* DONE block is the final step's answer.
+    Falls back to TASK COMPLETE summary, then to raw tail text.
     """
     last_done = captured.rfind("DONE")
     if last_done != -1:

@@ -137,7 +137,7 @@ async def run_ws_test(ws_url: str, wav_bytes: bytes) -> None:
 def main() -> None:
     args = parse_args()
     base_url = f"http://{args.host}:{args.port}"
-    ws_url = f"ws://{args.host}:{args.port}/voice"
+    ws_url = f"ws://{args.host}:{args.port}/ws"
 
     # 1. Health
     if not check_health(base_url):
