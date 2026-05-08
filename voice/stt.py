@@ -30,7 +30,12 @@ class SpeechToText:
     def transcribe(self, audio_bytes: bytes) -> str:
         try:
             self._ensure_loaded()
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            # Use the correct extension so ffmpeg picks the right decoder.
+            # WAV starts with "RIFF"; everything else (webm, ogg, mp4) goes
+            # to ffmpeg as-is via the .webm extension — faster-whisper/pyav
+            # handles any format ffmpeg can decode.
+            ext = ".wav" if len(audio_bytes) >= 4 and audio_bytes[:4] == b"RIFF" else ".webm"
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
                 f.write(audio_bytes)
                 path = f.name
             try:

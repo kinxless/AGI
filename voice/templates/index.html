@@ -433,11 +433,14 @@
             const mime = (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
             const blob = new Blob(audioChunks, { type: mime });
             console.log("[mic] recorded", blob.size, "bytes (" + mime + ")");
-
-            const wavBlob = await blobToWav16k(blob);
-            console.log("[mic] WAV", wavBlob.size, "bytes");
-
-            const b64 = await blobToBase64(wavBlob);
+            if (blob.size < 1000) {
+                setStatus("Too short — hold longer", true);
+                setOrbState("idle");
+                pendingSend = false;
+                return;
+            }
+            // Send raw webm bytes — server uses ffmpeg/faster-whisper to decode.
+            const b64 = await blobToBase64(blob);
             const ok = send({ type: "audio", data: b64 });
             if (!ok) {
                 pendingSend = false;
@@ -449,55 +452,6 @@
             setOrbState("idle");
             pendingSend = false;
         }
-    }
-
-    // ---------- audio conversion ----------
-    async function blobToWav16k(blob) {
-        const arrayBuffer = await blob.arrayBuffer();
-        const ctx = audioCtx();
-        const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
-        const targetRate = 16000;
-        const length = Math.max(1, Math.ceil(decoded.duration * targetRate));
-        const offline = new OfflineAudioContext(1, length, targetRate);
-        const src = offline.createBufferSource();
-        src.buffer = decoded;
-        src.connect(offline.destination);
-        src.start();
-        const resampled = await offline.startRendering();
-        return audioBufferToWav(resampled);
-    }
-
-    function audioBufferToWav(buffer) {
-        const numChannels = 1;
-        const sampleRate  = buffer.sampleRate;
-        const samples     = buffer.getChannelData(0);
-        const pcm = new Int16Array(samples.length);
-        for (let i = 0; i < samples.length; i++) {
-            const s = Math.max(-1, Math.min(1, samples[i]));
-            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-        const buf = new ArrayBuffer(44 + pcm.length * 2);
-        const view = new DataView(buf);
-        let off = 0;
-        const writeStr = (s) => { for (let i = 0; i < s.length; i++) view.setUint8(off++, s.charCodeAt(i)); };
-
-        writeStr("RIFF");
-        view.setUint32(off, 36 + pcm.length * 2, true); off += 4;
-        writeStr("WAVE");
-        writeStr("fmt ");
-        view.setUint32(off, 16, true);                 off += 4;
-        view.setUint16(off, 1, true);                  off += 2;   // PCM
-        view.setUint16(off, numChannels, true);        off += 2;
-        view.setUint32(off, sampleRate, true);         off += 4;
-        view.setUint32(off, sampleRate * numChannels * 2, true); off += 4;
-        view.setUint16(off, numChannels * 2, true);    off += 2;
-        view.setUint16(off, 16, true);                 off += 2;   // bits
-        writeStr("data");
-        view.setUint32(off, pcm.length * 2, true);     off += 4;
-        for (let i = 0; i < pcm.length; i++) {
-            view.setInt16(off, pcm[i], true);          off += 2;
-        }
-        return new Blob([buf], { type: "audio/wav" });
     }
 
     function blobToBase64(blob) {
