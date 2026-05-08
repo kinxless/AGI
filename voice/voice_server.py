@@ -37,7 +37,6 @@ import asyncio
 import base64
 import io
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -203,83 +202,21 @@ def _ensure_wav(audio_bytes: bytes) -> bytes:
 
 
 def _run_orchestrator(task: str) -> str:
-    """Run the full Orchestrator and capture its final answer.
+    """Run the agent loop directly and return its final answer.
 
-    The Orchestrator prints to stdout and reads input() for plan
-    approval. We redirect stdin to feed "yes" automatically, and tee
-    stdout so the captured text contains the agent loop's DONE block.
+    Uses AgentLoop (no planner) for voice: faster response and the answer
+    is returned directly without any stdout-capture gymnastics.
+    The full Orchestrator with planner is designed for long CLI sessions;
+    for voice you want a quick answer, not a multi-minute plan/approve cycle.
     """
-    from agent.orchestrator import Orchestrator
+    from agent.loop import AgentLoop
     from agent.logger import RunLogger
-
-    captured = io.StringIO()
-
-    real_stdin = sys.stdin
-    real_stdout = sys.stdout
-    sys.stdin = io.StringIO("yes\n" * 50)
-    sys.stdout = _Tee(real_stdout, captured)
 
     logger = RunLogger(run_name="voice")
     try:
-        Orchestrator(logger=logger).run(task)
+        loop = AgentLoop(logger=logger)
+        return loop.run(task)
+    except Exception as e:
+        return f"Agent error: {e}"
     finally:
-        sys.stdin = real_stdin
-        sys.stdout = real_stdout
         logger.close()
-
-    return _extract_answer(captured.getvalue())
-
-
-class _Tee:
-    """Writeable that forwards to multiple streams; tolerates per-stream errors."""
-
-    def __init__(self, *streams) -> None:
-        self.streams = streams
-
-    def write(self, s: str) -> int:
-        for stream in self.streams:
-            try:
-                stream.write(s)
-            except Exception:
-                pass
-        return len(s)
-
-    def flush(self) -> None:
-        for stream in self.streams:
-            try:
-                stream.flush()
-            except Exception:
-                pass
-
-
-def _extract_answer(captured: str) -> str:
-    """Pull a TTS-friendly answer from captured orchestrator output.
-
-    Strategy: the agent loop prints a "DONE" block containing each step's
-    full final answer. The *last* DONE block is the final step's answer.
-    Falls back to TASK COMPLETE summary, then to raw tail text.
-    """
-    last_done = captured.rfind("DONE")
-    if last_done != -1:
-        block = captured[last_done:]
-        body_lines: list[str] = []
-        in_body = False
-        for line in block.splitlines():
-            if line.startswith("="):
-                if in_body:
-                    break
-                continue
-            if line.startswith("---"):
-                in_body = True
-                continue
-            if in_body:
-                body_lines.append(line)
-        body = "\n".join(body_lines).strip()
-        if body:
-            return body
-
-    idx = captured.find("TASK COMPLETE")
-    if idx != -1:
-        return captured[idx : idx + 2000].strip()
-
-    return captured[-1500:].strip()
