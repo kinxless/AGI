@@ -39,7 +39,12 @@ class SpeechToText:
                 f.write(audio_bytes)
                 path = f.name
             try:
-                segments, _info = self._model.transcribe(path)
+                segments, _info = self._model.transcribe(
+                    path,
+                    language="en",
+                    condition_on_previous_text=False,
+                    temperature=0.0,
+                )
                 return "".join(s.text for s in segments).strip()
             finally:
                 try:

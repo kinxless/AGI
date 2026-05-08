@@ -202,21 +202,28 @@ def _ensure_wav(audio_bytes: bytes) -> bytes:
 
 
 def _run_orchestrator(task: str) -> str:
-    """Run the agent loop directly and return its final answer.
+    """Run the agent loop in a thread with a clean asyncio state.
 
-    Uses AgentLoop (no planner) for voice: faster response and the answer
-    is returned directly without any stdout-capture gymnastics.
-    The full Orchestrator with planner is designed for long CLI sessions;
-    for voice you want a quick answer, not a multi-minute plan/approve cycle.
+    Playwright's sync API checks asyncio.get_event_loop().is_running().
+    When run_in_executor spawns this thread it can still see uvicorn's
+    running loop, causing Playwright to refuse. Setting a fresh event loop
+    for the thread makes Playwright happy without touching the server loop.
     """
-    from agent.loop import AgentLoop
-    from agent.logger import RunLogger
+    import asyncio
 
-    logger = RunLogger(run_name="voice")
+    new_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(new_loop)
     try:
-        loop = AgentLoop(logger=logger)
-        return loop.run(task)
-    except Exception as e:
-        return f"Agent error: {e}"
+        from agent.loop import AgentLoop
+        from agent.logger import RunLogger
+
+        logger = RunLogger(run_name="voice")
+        try:
+            return AgentLoop(logger=logger).run(task)
+        except Exception as e:
+            return f"Agent error: {e}"
+        finally:
+            logger.close()
     finally:
-        logger.close()
+        new_loop.close()
+        asyncio.set_event_loop(None)
